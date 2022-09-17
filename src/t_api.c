@@ -1,5 +1,5 @@
 /*
- * iperf, Copyright (c) 2014, The Regents of the University of
+ * iperf, Copyright (c) 2017-2020, The Regents of the University of
  * California, through Lawrence Berkeley National Laboratory (subject
  * to receipt of any required approvals from the U.S. Dept. of
  * Energy).  All rights reserved.
@@ -24,60 +24,69 @@
  * This code is distributed under a BSD style license, see the LICENSE
  * file for complete information.
  */
-#include "iperf_config.h"
 
+
+#include <assert.h>
 #ifdef HAVE_STDINT_H
 #include <stdint.h>
 #endif
 #include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <sys/time.h>
+#include <string.h>
 
-#include "timer.h"
-#include "iperf_time.h"
+#include "iperf.h"
+#include "iperf_api.h"
 
+#include "version.h"
 
-static int flag;
+#include "units.h"
 
-
-static void
-timer_proc( TimerClientData client_data, struct iperf_time* nowP )
+int test_iperf_set_test_bind_port(struct iperf_test *test)
 {
-    flag = 1;
+    int port;
+    port = iperf_get_test_bind_port(test);
+    iperf_set_test_bind_port(test, 5202);
+    port = iperf_get_test_bind_port(test);
+    assert(port == 5202);
+    return 0;
 }
 
+int test_iperf_set_mss(struct iperf_test *test)
+{
+    int mss = iperf_get_test_mss(test);
+    iperf_set_test_mss(test, 535);
+    mss = iperf_get_test_mss(test);
+    assert(mss == 535);
+    return 0;
+}
 
 int
 main(int argc, char **argv)
 {
-    Timer *tp;
+    const char *ver;
+    struct iperf_test *test;
+    int sint, gint;
 
-    flag = 0;
-    tp = tmr_create(NULL, timer_proc, JunkClientData, 3000000, 0);
-    if (!tp)
+    ver = iperf_get_iperf_version();
+    assert(strcmp(ver, IPERF_VERSION) == 0);
+
+    test = iperf_new_test();
+    assert(test != NULL);
+
+    iperf_defaults(test);
+
+    sint = 10;
+    iperf_set_test_connect_timeout(test, sint);
+    gint = iperf_get_test_connect_timeout(test);
+    assert(sint == gint);
+
+    int ret;
+    ret = test_iperf_set_test_bind_port(test);
+
+    ret += test_iperf_set_mss(test);
+
+    if (ret < 0)
     {
-	printf("failed to create timer\n");
-	exit(-1);
+        return -1;
     }
-
-    sleep(2);
-
-    tmr_run(NULL);
-    if (flag)
-    {
-	printf("timer should not have expired\n");
-	exit(-1);
-    }
-    sleep(1);
-
-    tmr_run(NULL);
-    if (!flag)
-    {
-	printf("timer should have expired\n");
-	exit(-2);
-    }
-
-    tmr_destroy();
-    exit(0);
+    return 0;
 }

@@ -1,5 +1,5 @@
 /*
- * iperf, Copyright (c) 2014, 2016, 2017, The Regents of the University of
+ * iperf, Copyright (c) 2014-2022, The Regents of the University of
  * California, through Lawrence Berkeley National Laboratory (subject
  * to receipt of any required approvals from the U.S. Dept. of
  * Energy).  All rights reserved.
@@ -24,19 +24,19 @@
  * This code is distributed under a BSD style license, see the LICENSE
  * file for complete information.
  */
-#include "iperf_config.h"
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
+#include <arpa/inet.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <netinet/in.h>
 #include <netdb.h>
 #include <sys/time.h>
 #include <sys/select.h>
+#include <limits.h>
 
 #include "iperf.h"
 #include "iperf_api.h"
@@ -62,14 +62,21 @@ iperf_tcp_recv(struct iperf_stream *sp)
     if (r < 0)
         return r;
 
-    sp->result->bytes_received += r;
-    sp->result->bytes_received_this_interval += r;
+    /* Only count bytes received while we're in the correct state. */
+    if (sp->test->state == TEST_RUNNING) {
+	sp->result->bytes_received += r;
+	sp->result->bytes_received_this_interval += r;
+    }
+    else {
+	if (sp->test->debug)
+	    printf("Late receive, state = %d\n", sp->test->state);
+    }
 
     return r;
 }
 
 
-/* iperf_tcp_send 
+/* iperf_tcp_send
  *
  * sends the data for TCP
  */
@@ -78,16 +85,24 @@ iperf_tcp_send(struct iperf_stream *sp)
 {
     int r;
 
+    if (!sp->pending_size)
+	sp->pending_size = sp->settings->blksize;
+
     if (sp->test->zerocopy)
-	r = Nsendfile(sp->buffer_fd, sp->socket, sp->buffer, sp->settings->blksize);
+	r = Nsendfile(sp->buffer_fd, sp->socket, sp->buffer, sp->pending_size);
     else
-	r = Nwrite(sp->socket, sp->buffer, sp->settings->blksize, Ptcp);
+	r = Nwrite(sp->socket, sp->buffer, sp->pending_size, Ptcp);
 
     if (r < 0)
         return r;
 
+    sp->pending_size -= r;
     sp->result->bytes_sent += r;
     sp->result->bytes_sent_this_interval += r;
+
+    if (sp->test->debug_level >=  DEBUG_LEVEL_DEBUG)
+	printf("sent %d bytes of %d, pending %d, total %" PRIu64 "\n",
+	    r, sp->settings->blksize, sp->pending_size, sp->result->bytes_sent);
 
     return r;
 }
@@ -119,8 +134,7 @@ iperf_tcp_accept(struct iperf_test * test)
 
     if (strcmp(test->cookie, cookie) != 0) {
         if (Nwrite(s, (char*) &rbuf, sizeof(rbuf), Ptcp) < 0) {
-            i_errno = IESENDMESSAGE;
-            return -1;
+            iperf_err(test, "failed to send access denied from busy server to new connecting client, errno = %d\n", errno);
         }
         close(s);
     }
@@ -175,7 +189,7 @@ iperf_tcp_listen(struct iperf_test *test)
 	}
         hints.ai_socktype = SOCK_STREAM;
         hints.ai_flags = AI_PASSIVE;
-        if (getaddrinfo(test->bind_address, portstr, &hints, &res) != 0) {
+        if ((gerror = getaddrinfo(test->bind_address, portstr, &hints, &res)) != 0) {
             i_errno = IESTREAMLISTEN;
             return -1;
         }
@@ -260,7 +274,7 @@ iperf_tcp_listen(struct iperf_test *test)
         }
 
 	/*
-	 * If we got an IPv6 socket, figure out if it shoudl accept IPv4
+	 * If we got an IPv6 socket, figure out if it should accept IPv4
 	 * connections as well.  See documentation in netannounce() for
 	 * more details.
 	 */
@@ -268,9 +282,9 @@ iperf_tcp_listen(struct iperf_test *test)
 	if (res->ai_family == AF_INET6 && (test->settings->domain == AF_UNSPEC || test->settings->domain == AF_INET)) {
 	    if (test->settings->domain == AF_UNSPEC)
 		opt = 0;
-	    else 
+	    else
 		opt = 1;
-	    if (setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, 
+	    if (setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY,
 			   (char *) &opt, sizeof(opt)) < 0) {
 		saved_errno = errno;
 		close(s);
@@ -293,14 +307,14 @@ iperf_tcp_listen(struct iperf_test *test)
 
         freeaddrinfo(res);
 
-        if (listen(s, 5) < 0) {
+        if (listen(s, INT_MAX) < 0) {
             i_errno = IESTREAMLISTEN;
             return -1;
         }
 
         test->listener = s;
     }
-    
+
     /* Read back and verify the sender socket buffer size */
     optlen = sizeof(sndbuf_actual);
     if (getsockopt(s, SOL_SOCKET, SO_SNDBUF, &sndbuf_actual, &optlen) < 0) {
@@ -348,62 +362,23 @@ iperf_tcp_listen(struct iperf_test *test)
 /* iperf_tcp_connect
  *
  * connect to a TCP stream listener
+ * This function is roughly similar to netdial(), and may indeed have
+ * been derived from it at some point, but it sets many TCP-specific
+ * options between socket creation and connection.
  */
 int
 iperf_tcp_connect(struct iperf_test *test)
 {
-    struct addrinfo hints, *local_res, *server_res;
-    char portstr[6];
+    struct addrinfo *server_res;
     int s, opt;
     socklen_t optlen;
     int saved_errno;
     int rcvbuf_actual, sndbuf_actual;
 
-    if (test->bind_address) {
-        memset(&hints, 0, sizeof(hints));
-        hints.ai_family = test->settings->domain;
-        hints.ai_socktype = SOCK_STREAM;
-        if (getaddrinfo(test->bind_address, NULL, &hints, &local_res) != 0) {
-            i_errno = IESTREAMCONNECT;
-            return -1;
-        }
-    }
-
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = test->settings->domain;
-    hints.ai_socktype = SOCK_STREAM;
-    snprintf(portstr, sizeof(portstr), "%d", test->server_port);
-    if (getaddrinfo(test->server_hostname, portstr, &hints, &server_res) != 0) {
-	if (test->bind_address)
-	    freeaddrinfo(local_res);
-        i_errno = IESTREAMCONNECT;
-        return -1;
-    }
-
-    if ((s = socket(server_res->ai_family, SOCK_STREAM, 0)) < 0) {
-	if (test->bind_address)
-	    freeaddrinfo(local_res);
-	freeaddrinfo(server_res);
-        i_errno = IESTREAMCONNECT;
-        return -1;
-    }
-
-    if (test->bind_address) {
-        struct sockaddr_in *lcladdr;
-        lcladdr = (struct sockaddr_in *)local_res->ai_addr;
-        lcladdr->sin_port = htons(test->bind_port);
-        local_res->ai_addr = (struct sockaddr *)lcladdr;
-
-        if (bind(s, (struct sockaddr *) local_res->ai_addr, local_res->ai_addrlen) < 0) {
-	    saved_errno = errno;
-	    close(s);
-	    freeaddrinfo(local_res);
-	    freeaddrinfo(server_res);
-	    errno = saved_errno;
-            i_errno = IESTREAMCONNECT;
-            return -1;
-        }
-        freeaddrinfo(local_res);
+    s = create_socket(test->settings->domain, SOCK_STREAM, test->bind_address, test->bind_dev, test->bind_port, test->server_hostname, test->server_port, &server_res);
+    if (s < 0) {
+	i_errno = IESTREAMCONNECT;
+	return -1;
     }
 
     /* Set socket options */
@@ -446,6 +421,18 @@ iperf_tcp_connect(struct iperf_test *test)
             return -1;
         }
     }
+#if defined(HAVE_TCP_USER_TIMEOUT)
+    if ((opt = test->settings->snd_timeout)) {
+        if (setsockopt(s, IPPROTO_TCP, TCP_USER_TIMEOUT, &opt, sizeof(opt)) < 0) {
+	    saved_errno = errno;
+	    close(s);
+	    freeaddrinfo(server_res);
+	    errno = saved_errno;
+            i_errno = IESETUSERTIMEOUT;
+            return -1;
+        }
+    }
+#endif /* HAVE_TCP_USER_TIMEOUT */
 
     /* Read back and verify the sender socket buffer size */
     optlen = sizeof(sndbuf_actual);
@@ -508,7 +495,7 @@ iperf_tcp_connect(struct iperf_test *test)
             freq->flr_label = htonl(test->settings->flowlabel & IPV6_FLOWINFO_FLOWLABEL);
             freq->flr_action = IPV6_FL_A_GET;
             freq->flr_flags = IPV6_FL_F_CREATE;
-            freq->flr_share = IPV6_FL_F_CREATE | IPV6_FL_S_EXCL;
+            freq->flr_share = IPV6_FL_S_ANY;
             memcpy(&freq->flr_dst, &sa6P->sin6_addr, 16);
 
             if (setsockopt(s, IPPROTO_IPV6, IPV6_FLOWLABEL_MGR, freq, freq_len) < 0) {
@@ -529,7 +516,7 @@ iperf_tcp_connect(struct iperf_test *test)
 		errno = saved_errno;
                 i_errno = IESETFLOW;
                 return -1;
-            } 
+            }
 	}
     }
 #endif /* HAVE_FLOWLABEL */
