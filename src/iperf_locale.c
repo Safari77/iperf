@@ -59,7 +59,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
  * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
  * OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE CONTIBUTORS OR COPYRIGHT
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE CONTRIBUTORS OR COPYRIGHT
  * HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
  * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
  * ARISING FROM, OUT OF OR IN CONNECTION WITH THE
@@ -128,6 +128,9 @@ const char usage_longstr[] = "Usage: iperf3 [-s|-c host] [options]\n"
                            "  --snd-timeout #           timeout for unacknowledged TCP data\n"
                            "                            (in ms, default is system settings)\n"
 #endif /* HAVE_TCP_USER_TIMEOUT */
+#if defined(HAVE_IPPROTO_MPTCP)
+                           "  -m, --mptcp               use MPTCP rather than plain TCP\n"
+#endif
                            "  -d, --debug[=#]           emit debugging output\n"
                            "                            (optional optional \"=\" and debug level: 1-4. Default is 4 - all messages)\n"
                            "  -v, --version             show version information and quit\n"
@@ -163,19 +166,17 @@ const char usage_longstr[] = "Usage: iperf3 [-s|-c host] [options]\n"
                            "  -b, --bitrate #[KMG][/#]  target bitrate in bits/sec (0 for unlimited)\n"
                            "                            (default %d Mbit/sec for UDP, unlimited for TCP)\n"
                            "                            (optional slash and packet count for burst mode)\n"
-#if !defined(HAVE_CLOCK_NANOSLEEP) && !defined(HAVE_NANOSLEEP)
-			   "  --pacing-timer #[KMG]     set the timing for pacing, in microseconds (default %d)\n"
-#else
 			   "  --pacing-timer #[KMG]     set the Server timing for pacing, in microseconds (default %d)\n"
-                           "                            (used by the server only if this option is in its help message)\n"
-#endif /* !HAVE_CLOCK_NANOSLEEP && !HAVE_NANOSLEEP */
+                           "                            (deprecated - for servers using older versions ackward compatibility)\n"
 #if defined(HAVE_SO_MAX_PACING_RATE)
                            "  --fq-rate #[KMG]          enable fair-queuing based socket pacing in\n"
 			   "                            bits/sec (Linux only)\n"
 #endif
                            "  -t, --time      #         time in seconds to transmit for (default %d secs)\n"
-                           "  -n, --bytes     #[KMG]    number of bytes to transmit (instead of -t)\n"
-                           "  -k, --blockcount #[KMG]   number of blocks (packets) to transmit (instead of -t or -n)\n"
+                           "  -n, --bytes     #[KMG]    transmit until the end of the interval when the client sent or received\n"
+                           "                            (per direction) at least this number of bytes (instead of -t or -k)\n"
+                           "  -k, --blockcount #[KMG]   transmit until the end of the interval when the client sent or received\n"
+                           "                            (per direction) at least this number of blocks (instead of -t or -n)\n"
                            "  -l, --length    #[KMG]    length of buffer to read or write\n"
 			   "                            (default %d KB for TCP, dynamic or %d for UDP)\n"
                            "  --cport         <port>    bind to a specific client port (TCP and UDP, default: ephemeral port)\n"
