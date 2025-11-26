@@ -312,6 +312,7 @@ struct iperf_test
     int       server_port;
     int       omit;                             /* duration of omit period (-O flag) */
     int       duration;                         /* total duration of test (-t flag) */
+    int       max_server_duration;               /* maximum possible duration of test as enforced by the server (--max-server-duration flag) */
     char     *diskfile_name;			/* -F option */
     int       affinity, server_affinity;	/* -A option */
 #if defined(HAVE_CPUSET_SETAFFINITY)
@@ -350,6 +351,7 @@ struct iperf_test
     int	      verbose;                          /* -V option - verbose mode */
     int	      json_output;                      /* -J option - JSON output */
     int	      json_stream;                      /* --json-stream */
+    int       json_stream_full_output;          /* --json-stream-full-output */
     void      (*json_callback) (struct iperf_test *, char *); /* allow user apps to receive the
                                                 JSON strings,instead of writing them to the output file */
     int	      zerocopy;                         /* -Z option - use sendfile */
